@@ -8,6 +8,13 @@ Chrome extension for `https://inoriginal.cc/` that:
 - connects to Anki through AnkiConnect
 - creates notes in a selected deck and note type
 
+<img width="525" height="871" alt="image" src="https://github.com/user-attachments/assets/45708c94-499f-4ece-a41b-99642b4c9fde" />
+
+<img width="1369" height="1064" alt="image" src="https://github.com/user-attachments/assets/71fabd62-7f4c-4f34-a5ea-4fc68a14912b" />
+
+<img width="1369" height="911" alt="image" src="https://github.com/user-attachments/assets/8ac21943-2cc8-4f2c-b495-b55a9096937a" />
+
+
 ## Hotkeys
 
 - `Ctrl+Shift+1`: take a screenshot of the visible tab
