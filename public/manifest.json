@@ -1,0 +1,93 @@
+{
+  "manifest_version": 3,
+  "name": "InOriginal Capture Helper",
+  "version": "1.0.0",
+  "description": "Take screenshots with hotkeys and capture tab audio plus subtitles from inoriginal.cc.",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "permissions": [
+    "activeTab",
+    "offscreen",
+    "scripting",
+    "sidePanel",
+    "storage",
+    "tabCapture",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "https://inoriginal.cc/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "commands": {
+    "take-screenshot": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Z"
+      },
+      "description": "Save a screenshot of the current tab"
+    },
+    "toggle-recording": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+2"
+      },
+      "description": "Start or stop tab audio and subtitle capture"
+    },
+    "capture-subtitle-clip": {
+      "suggested_key": {
+        "default": "Alt+Shift+Q"
+      },
+      "description": "Capture current subtitle"
+    },
+    "create-anki-card": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+A"
+      },
+      "description": "Create an Anki note from the current subtitle and latest capture"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://inoriginal.cc/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    },
+    "default_title": "InOriginal Capture Helper",
+    "default_popup": "popup.html"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "offscreen.html",
+        "offscreen.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

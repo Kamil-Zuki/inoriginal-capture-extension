@@ -1,0 +1,23 @@
+{
+  "name": "inoriginal-capture-extension",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "sync-public": "powershell -ExecutionPolicy Bypass -File ./scripts/sync-public.ps1",
+    "build": "npm run sync-public && vite build",
+    "dev": "npm run sync-public && vite build --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.0.4",
+    "vite": "^7.1.12",
+    "typescript": "^5.9.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "@types/chrome": "^0.1.33",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.2"
+  },
+  "devDependencies": {}
+}
