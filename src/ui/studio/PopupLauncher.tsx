@@ -10,6 +10,7 @@ type PopupLauncherProps = {
   onOpenWorkspace: () => void;
   onStopRecording: () => void;
   onCancelCapture: () => void;
+  onSwitchToPractice: () => void;
 };
 
 export function PopupLauncher({
@@ -20,7 +21,8 @@ export function PopupLauncher({
   onCapture,
   onOpenWorkspace,
   onStopRecording,
-  onCancelCapture
+  onCancelCapture,
+  onSwitchToPractice
 }: PopupLauncherProps) {
   return (
     <main className="quick-panel quick-panel--launcher">
@@ -40,6 +42,9 @@ export function PopupLauncher({
       <div className="quick-actions">
         <button className="primary-action" disabled={isRecording} onClick={onCapture} type="button">
           Capture subtitle
+        </button>
+        <button className="secondary" onClick={onSwitchToPractice} type="button">
+          Practice Mode
         </button>
         <button className="secondary" onClick={onOpenWorkspace} type="button">
           Open workspace

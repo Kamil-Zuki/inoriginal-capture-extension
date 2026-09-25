@@ -36,6 +36,7 @@ export type AnkiSettings = {
   translationTargetLang: string;
   tags: string;
   fieldMapping: FieldMapping;
+  appMode?: AppMode;
 };
 
 export type CaptureData = {
@@ -130,4 +131,27 @@ export type RuntimeResponse<T> = {
   result?: T;
   context?: PopupContext;
   settings?: AnkiSettings;
+  state?: PracticeState;
+};
+
+/** Top-level app mode: Anki capture studio or Shadow speaking practice. */
+export type AppMode = "studio" | "practice";
+
+export type PracticeStatus =
+  | "idle"
+  | "loading"
+  | "ready"
+  | "playing"
+  | "paused-for-practice"
+  | "finished"
+  | "error";
+
+export type PracticeState = {
+  status: PracticeStatus;
+  cues: SubtitleCue[];
+  activeCueIndex: number;
+  sourceLabel?: string;
+  error?: string;
+  autoPause: boolean;
+  revealMode: "always-show" | "hide-during-playback" | "always-hide";
 };

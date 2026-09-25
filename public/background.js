@@ -6,6 +6,16 @@ const ANKI_SETTINGS_KEY = "ankiSettings";
 const CARD_HISTORY_KEY = "cardHistory";
 const LAST_UNDOABLE_CARD_KEY = "lastUndoableCard";
 
+let practiceState = {
+  status: "idle",
+  cues: [],
+  activeCueIndex: -1,
+  sourceLabel: "",
+  error: "",
+  autoPause: true,
+  revealMode: "hide-during-playback"
+};
+
 const DEFAULT_ANKI_SETTINGS = {
   settingsVersion: 2,
   captureMode: "dom-fallback",
@@ -156,6 +166,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === "stop-current-capture") {
     void stopCurrentCapture("manual")
       .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "get-practice-state") {
+    sendResponse({ ok: true, state: practiceState });
+    return;
+  }
+
+  if (message?.type === "set-practice-state") {
+    practiceState = { ...practiceState, ...message.state };
+    sendResponse({ ok: true, state: practiceState });
+    return;
+  }
+
+  if (message?.type === "control-video-playback") {
+    void controlVideoPlayback(message.action, message.payload || {})
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "sync-practice-cues") {
+    void syncPracticeCues()
+      .then((state) => sendResponse({ ok: true, state }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -811,7 +846,7 @@ async function recordAudioRange(payload) {
   const latestCapture = await getLatestCapture();
   const audio = latestCapture?.audio;
 
-  if (!audio?.videoStartTime && audio?.videoStartTime !== 0) {
+  if (audio?.videoStartTime == null) {
     throw new Error("This audio clip has no video timing metadata yet. Capture again once, then range re-record will be available.");
   }
 
@@ -1459,10 +1494,14 @@ async function ensureOffscreenDocument() {
 }
 
 async function sendMessageToTab(tabId, message) {
-  await chrome.scripting.executeScript({
-    target: { tabId },
-    files: ["content.js"]
-  });
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"]
+    });
+  } catch (error) {
+    console.warn("executeScript for content.js failed (expected if already injected):", error);
+  }
 
   return chrome.tabs.sendMessage(tabId, message);
 }
@@ -1726,6 +1765,7 @@ function normalizeSentenceDraft(value = {}) {
     example: value.example || "",
     synonyms: value.synonyms || "",
     antonyms: value.antonyms || "",
+    mnemonic: value.mnemonic || "",
     source: value.source || "",
     url: value.url || ""
   };
@@ -1811,12 +1851,13 @@ function toSrt(entries, stoppedAt) {
       const next = entries[index + 1];
       const sessionStartMs = entry.sessionStartedAt || 0;
       const fallbackEndMs = stoppedAt - sessionStartMs;
-      const start = formatSrtTime(entry.atMs);
-      const end = formatSrtTime(
-        Math.max(entry.atMs + 500, next?.atMs ?? entry.endMs ?? fallbackEndMs)
-      );
+      const startTime = entry.atMs;
+      let endTime = next?.atMs ?? entry.endMs ?? fallbackEndMs;
+      if (entry.end !== undefined) {
+        endTime = entry.end > 100000 ? entry.end : entry.end * 1000;
+      }
 
-      return `${index + 1}\n${start} --> ${end}\n${entry.text}\n`;
+      return `${index + 1}\n${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n${entry.text}\n`;
     })
     .join("\n");
 }
@@ -1839,4 +1880,33 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+async function controlVideoPlayback(action, payload) {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) {
+    throw new Error("No active tab.");
+  }
+  return await sendMessageToTab(tab.id, {
+    type: "practice-playback-control",
+    action,
+    payload
+  });
+}
+
+async function syncPracticeCues() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) {
+    throw new Error("No active tab.");
+  }
+  const timeline = await sendMessageToTab(tab.id, { type: "get-subtitle-timeline" });
+  if (timeline?.cues) {
+    practiceState.cues = timeline.cues;
+    practiceState.sourceLabel = timeline.sourceLabel;
+    practiceState.status = "ready";
+  } else {
+    practiceState.cues = [];
+    practiceState.status = "idle";
+  }
+  return practiceState;
 }

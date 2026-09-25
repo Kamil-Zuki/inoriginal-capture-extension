@@ -3,6 +3,7 @@ import { getPopupContext, saveAnkiSettings, sendRuntimeMessage } from "../shared
 import type { AnkiSettings, CaptureData, PopupContext, SentenceDraft } from "../shared/types";
 import { PopupLauncher } from "./studio/PopupLauncher";
 import type { StudioStep } from "./studio/types";
+import { PracticePanel } from "./practice/PracticePanel";
 import "./styles.css";
 
 const STUDIO_STEP_KEY = "inoriginal-capture-active-step";
@@ -84,6 +85,15 @@ export function CaptureApp({ mode }: CaptureAppProps) {
     return stored === "edit" || stored === "send" ? stored : "capture";
   });
   const [overflowOpen, setOverflowOpen] = useState(false);
+
+  const APP_MODE_KEY = "inoriginal-capture-app-mode";
+  const [appMode, setAppMode] = useState<"studio" | "practice">(() => {
+    return (localStorage.getItem(APP_MODE_KEY) as "studio" | "practice") || "studio";
+  });
+
+  useEffect(() => {
+    localStorage.setItem(APP_MODE_KEY, appMode);
+  }, [appMode]);
 
   useEffect(() => {
     void refresh();
@@ -922,6 +932,10 @@ export function CaptureApp({ mode }: CaptureAppProps) {
     (activeStep === "edit" || activeStep === "send") &&
     (hasDraft || Boolean(expression.trim()) || Boolean(word.trim()) || Boolean(translation.trim()));
 
+  if (appMode === "practice") {
+    return <PracticePanel onSwitchToStudio={() => setAppMode("studio")} />;
+  }
+
   if (mode === "popup") {
     return (
       <PopupLauncher
@@ -933,6 +947,7 @@ export function CaptureApp({ mode }: CaptureAppProps) {
         onCapture={() => void captureSubtitleClip()}
         onOpenWorkspace={() => void openSidePanel()}
         onStopRecording={() => void stopRecording()}
+        onSwitchToPractice={() => setAppMode("practice")}
       />
     );
   }
@@ -947,6 +962,9 @@ export function CaptureApp({ mode }: CaptureAppProps) {
         <WorkflowTabs activeStep={activeStep} onChange={setActiveStep} />
         <div className="studio-topbar__actions">
           <StatusPill status={flowStatus} />
+          <button className="secondary" onClick={() => setAppMode("practice")} type="button">
+            Practice Mode
+          </button>
           <div className="overflow-menu">
             <button
               aria-expanded={overflowOpen}

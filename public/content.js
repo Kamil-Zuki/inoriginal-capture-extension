@@ -136,6 +136,20 @@
         .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
       return true;
     }
+
+    if (message?.type === "get-subtitle-timeline") {
+      void getSubtitleTimeline()
+        .then((timeline) => sendResponse(timeline))
+        .catch((error) => sendResponse({ error: error.message || String(error) }));
+      return true;
+    }
+
+    if (message?.type === "practice-playback-control") {
+      void handlePracticePlaybackControl(message.action, message.payload || {})
+        .then(() => sendResponse({ ok: true }))
+        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+      return true;
+    }
   });
 
   function startCapture(startedAt) {
@@ -606,6 +620,76 @@ function observeSubtitle() {
     const control = findPlaybackToggle();
     if (control instanceof HTMLElement) {
       control.click();
+    }
+  }
+
+  function playVideoPlayback() {
+    const mediaElement = getVideoElement();
+    if (mediaElement && mediaElement.paused) {
+      void mediaElement.play().catch(() => {
+        // Fallback to DOM click if play() fails (e.g., due to user interaction policies)
+        const control = findPlaybackToggle();
+        if (control instanceof HTMLElement) {
+          control.click();
+        }
+      });
+      return;
+    }
+
+    const control = findPlaybackToggle();
+    if (control instanceof HTMLElement) {
+      control.click();
+    }
+  }
+
+  let practiceTimeupdateHandler = null;
+
+  async function handlePracticePlaybackControl(action, payload) {
+    const mediaElement = getVideoElement();
+    if (!mediaElement) {
+      throw new Error("No video element found.");
+    }
+
+    if (action === "play") {
+      playVideoPlayback();
+    } else if (action === "pause") {
+      pauseVideoPlayback();
+    } else if (action === "seek") {
+      seekVideo(mediaElement, payload.time);
+    } else if (action === "set-auto-pause") {
+      if (practiceTimeupdateHandler) {
+        mediaElement.removeEventListener("timeupdate", practiceTimeupdateHandler);
+        practiceTimeupdateHandler = null;
+      }
+      
+      if (payload.enabled && payload.endTimestamp != null) {
+        practiceTimeupdateHandler = () => {
+          if (mediaElement.currentTime >= payload.endTimestamp - 0.05) {
+            pauseVideoPlayback();
+            mediaElement.removeEventListener("timeupdate", practiceTimeupdateHandler);
+            practiceTimeupdateHandler = null;
+            void chrome.runtime.sendMessage({ type: "practice-auto-paused" }).catch(() => null);
+          }
+        };
+        mediaElement.addEventListener("timeupdate", practiceTimeupdateHandler);
+      }
+    } else if (action === "set-reveal-mode") {
+      const pjsSub = document.querySelector("#pjs_playerjs_subtitle");
+      if (pjsSub) {
+        if (payload.mode === "always-hide" || payload.mode === "hide-during-playback") {
+           pjsSub.style.opacity = payload.mode === "always-hide" || !mediaElement.paused ? "0" : "1";
+           
+           // Ensure we attach pause/play listeners to toggle visibility dynamically
+           mediaElement.addEventListener("play", () => {
+             if (payload.mode === "hide-during-playback") pjsSub.style.opacity = "0";
+           });
+           mediaElement.addEventListener("pause", () => {
+             if (payload.mode === "hide-during-playback") pjsSub.style.opacity = "1";
+           });
+        } else {
+           pjsSub.style.opacity = "1";
+        }
+      }
     }
   }
 
