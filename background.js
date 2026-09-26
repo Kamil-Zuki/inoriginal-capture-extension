@@ -195,6 +195,33 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "episode-changed") {
+    if (practiceState.status === "ready") {
+      practiceState.status = "idle";
+      practiceState.cues = [];
+      practiceState.activeCueIndex = -1;
+      void stopPracticeCueTracking();
+      setTimeout(() => {
+        void syncPracticeCues();
+      }, 3000);
+    }
+    sendResponse({ ok: true });
+    return;
+  }
+
+  if (message?.type === "practice-cue-changed") {
+    if (practiceState.status === "ready" && typeof message.activeCueIndex === "number") {
+      practiceState.activeCueIndex = message.activeCueIndex;
+      // Broadcast to all extension views (side panel, popup)
+      void chrome.runtime.sendMessage({
+        type: "practice-state-updated",
+        state: practiceState
+      }).catch(() => null);
+    }
+    sendResponse({ ok: true });
+    return;
+  }
+
   if (message?.type === "open-anki-note") {
     void openAnkiNote(message.noteId)
       .then((result) => sendResponse({ ok: true, result }))
@@ -748,7 +775,7 @@ async function stopRecording(tabId) {
 
 async function finalizeSubtitleClip(message) {
   const session = await getSession();
-  if (!session?.tabId || session.mode !== "clip") {
+  if (!session?.tabId || !["clip", "clip-waiting"].includes(session.mode)) {
     return;
   }
 
@@ -1900,13 +1927,32 @@ async function syncPracticeCues() {
     throw new Error("No active tab.");
   }
   const timeline = await sendMessageToTab(tab.id, { type: "get-subtitle-timeline" });
-  if (timeline?.cues) {
+  if (timeline?.cues?.length) {
     practiceState.cues = timeline.cues;
-    practiceState.sourceLabel = timeline.sourceLabel;
+    practiceState.sourceLabel = timeline.sourceLabel || "";
     practiceState.status = "ready";
+    practiceState.error = "";
+    if (typeof timeline.currentCueIndex === "number" && timeline.currentCueIndex >= 0) {
+      practiceState.activeCueIndex = timeline.currentCueIndex;
+    } else if (practiceState.activeCueIndex < 0 || practiceState.activeCueIndex >= timeline.cues.length) {
+      practiceState.activeCueIndex = 0;
+    }
+    // Start push tracking in the content script
+    void sendMessageToTab(tab.id, {
+      type: "start-practice-tracking",
+      cues: timeline.cues
+    }).catch(() => null);
   } else {
     practiceState.cues = [];
     practiceState.status = "idle";
+    practiceState.activeCueIndex = -1;
+    void sendMessageToTab(tab.id, { type: "stop-practice-tracking" }).catch(() => null);
   }
   return practiceState;
+}
+
+async function stopPracticeCueTracking() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+  void sendMessageToTab(tab.id, { type: "stop-practice-tracking" }).catch(() => null);
 }

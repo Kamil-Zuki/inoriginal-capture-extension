@@ -33,12 +33,12 @@
     subtitleTimelineEpoch: 0
   };
 
-  /** Сброс кэша таймлайна при навигации без полной перезагрузки (другой сериал/эпизод). */
   function clearSubtitleTimelineCache() {
     state.subtitleTimelineEpoch += 1;
     state.timeline = null;
     state.timelinePageSignature = null;
     state.timelinePromise = null;
+    void chrome.runtime.sendMessage({ type: "episode-changed" }).catch(() => null);
   }
 
   if (typeof window !== "undefined") {
@@ -139,7 +139,18 @@
 
     if (message?.type === "get-subtitle-timeline") {
       void getSubtitleTimeline()
-        .then((timeline) => sendResponse(timeline))
+        .then((timeline) => {
+          const videoTime = getVideoTime();
+          const activeCue = resolveCueFromTimeline(timeline, null, videoTime);
+          const currentCueIndex = activeCue && timeline?.cues?.length
+            ? timeline.cues.findIndex((c) => c.index === activeCue.index || (c.start === activeCue.start && c.end === activeCue.end))
+            : -1;
+          sendResponse({
+            ...timeline,
+            currentTime: videoTime,
+            currentCueIndex: currentCueIndex >= 0 ? currentCueIndex : 0
+          });
+        })
         .catch((error) => sendResponse({ error: error.message || String(error) }));
       return true;
     }
@@ -149,6 +160,18 @@
         .then(() => sendResponse({ ok: true }))
         .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
       return true;
+    }
+
+    if (message?.type === "start-practice-tracking") {
+      startPracticeCueTracking(message.cues || []);
+      sendResponse({ ok: true });
+      return;
+    }
+
+    if (message?.type === "stop-practice-tracking") {
+      stopPracticeCueTracking();
+      sendResponse({ ok: true });
+      return;
     }
   });
 
@@ -520,7 +543,7 @@ function observeSubtitle() {
     }, rewound ? 1800 : 350);
 
     state.clipMaxTimer = window.setTimeout(() => {
-      if (!state.clipMode?.active || !state.clipMode.recordingStarted) {
+      if (!state.clipMode?.active) {
         return;
       }
 
@@ -644,18 +667,75 @@ function observeSubtitle() {
 
   let practiceTimeupdateHandler = null;
 
+  // Push-синхронизация: отслеживает смену активной реплики во время воспроизведения
+  // и уведомляет background без polling.
+  const practiceCueTracker = {
+    active: false,
+    cues: [],
+    lastCueIndex: -1,
+    handler: null
+  };
+
+  function startPracticeCueTracking(cues) {
+    stopPracticeCueTracking();
+    if (!cues?.length) return;
+    const mediaElement = getVideoElement();
+    if (!mediaElement) return;
+
+    practiceCueTracker.active = true;
+    practiceCueTracker.cues = cues;
+    practiceCueTracker.lastCueIndex = -1;
+
+    practiceCueTracker.handler = () => {
+      if (!practiceCueTracker.active) return;
+      const t = mediaElement.currentTime;
+      const idx = cues.findIndex((c) => t >= c.start && t < c.end + 0.15);
+      const resolved = idx >= 0 ? idx : practiceCueTracker.lastCueIndex;
+      if (resolved !== practiceCueTracker.lastCueIndex && resolved >= 0) {
+        practiceCueTracker.lastCueIndex = resolved;
+        void chrome.runtime.sendMessage({
+          type: "practice-cue-changed",
+          activeCueIndex: resolved
+        }).catch(() => null);
+      }
+    };
+
+    mediaElement.addEventListener("timeupdate", practiceCueTracker.handler);
+  }
+
+  function stopPracticeCueTracking() {
+    practiceCueTracker.active = false;
+    if (practiceCueTracker.handler) {
+      const mediaElement = getVideoElement();
+      mediaElement?.removeEventListener("timeupdate", practiceCueTracker.handler);
+      practiceCueTracker.handler = null;
+    }
+  }
+
   async function handlePracticePlaybackControl(action, payload) {
     const mediaElement = getVideoElement();
     if (!mediaElement) {
       throw new Error("No video element found.");
     }
 
-    if (action === "play") {
-      playVideoPlayback();
+    if (action === "play" || action === "toggle-play-pause") {
+      const media = getVideoElement();
+      if (media) {
+        if (media.paused) {
+          playVideoPlayback();
+        } else {
+          pauseVideoPlayback();
+        }
+      } else {
+        const control = findPlaybackToggle();
+        if (control instanceof HTMLElement) {
+          control.click();
+        }
+      }
     } else if (action === "pause") {
       pauseVideoPlayback();
     } else if (action === "seek") {
-      seekVideo(mediaElement, payload.time);
+      await seekVideo(mediaElement, payload.time);
     } else if (action === "set-auto-pause") {
       if (practiceTimeupdateHandler) {
         mediaElement.removeEventListener("timeupdate", practiceTimeupdateHandler);
@@ -833,12 +913,15 @@ function observeSubtitle() {
 
   function seekVideo(mediaElement, targetSeconds) {
     return new Promise((resolve, reject) => {
-      if (!mediaElement || !Number.isFinite(mediaElement.duration)) {
+      if (!mediaElement) {
         reject(new Error("No seekable video element found."));
         return;
       }
 
-      const duration = mediaElement.duration || targetSeconds;
+      let duration = mediaElement.duration;
+      if (!Number.isFinite(duration)) {
+        duration = targetSeconds + 1000;
+      }
       const nextTime = Math.max(0, Math.min(targetSeconds, duration));
       const finish = () => resolve({ currentTime: mediaElement.currentTime, duration });
       const timeout = window.setTimeout(finish, 1200);
@@ -2077,20 +2160,33 @@ function maybeCompleteClip(text, previousText) {
       return null;
     }
 
-    // Раньше: cues.find((cue) => videoTime < cue.start) — это ПЕРВЫЙ будущий куй.
-    // В паузе между репликами показывался текст следующей фразы (иногда звуковые метки вроде [beeping]),
-    // хотя на экране ещё предыдущая или пусто. В промежутке берём последний уже закончившийся куй.
-    let lastBeforeOrInside = null;
-    for (const cue of cues) {
-      if (videoTime < cue.start) {
-        return lastBeforeOrInside;
-      }
-      if (videoTime <= cue.end) {
+    if (videoTime <= cues[0].start) {
+      return cues[0];
+    }
+    if (videoTime >= cues[cues.length - 1].end) {
+      return cues[cues.length - 1];
+    }
+
+    for (let i = 0; i < cues.length; i++) {
+      const cue = cues[i];
+      if (videoTime >= cue.start && videoTime <= cue.end) {
         return cue;
       }
-      lastBeforeOrInside = cue;
+      if (videoTime < cue.start) {
+        const prevCue = cues[i - 1];
+        if (!prevCue) {
+          return cue;
+        }
+        const distToPrev = Math.max(0, videoTime - prevCue.end);
+        const distToNext = Math.max(0, cue.start - videoTime);
+        if (distToNext <= 1.0 || distToNext < distToPrev) {
+          return cue;
+        }
+        return prevCue;
+      }
     }
-    return lastBeforeOrInside;
+
+    return cues[cues.length - 1];
   }
 
   function findPlaybackToggle() {

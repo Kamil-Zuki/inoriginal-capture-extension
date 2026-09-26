@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { sendRuntimeMessage } from "../../shared/chromeApi";
 import type { PracticeState } from "../../shared/types";
 
@@ -18,20 +18,55 @@ export function PracticePanel({ onSwitchToStudio }: { onSwitchToStudio: () => vo
   const [mode, setMode] = useState<PracticeMode>("output");
 
   const panelRef = useRef<HTMLDivElement>(null);
+  const activeCueRef = useRef<HTMLDivElement>(null);
+  const hasInitialScrolled = useRef(false);
+  const stateRef = useRef(state);
+  stateRef.current = state;
 
+  // ──────────────────────────────────────────────────────────────
+  // Push sync: listen for practice-state-updated from background
+  // ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    void fetchState();
-    const interval = setInterval(fetchState, 1500);
-    return () => clearInterval(interval);
+    void syncCues();
+
+    const onMessage = (message: { type: string; state?: PracticeState }) => {
+      if (message?.type === "practice-state-updated" && message.state) {
+        setState((prev) => {
+          // Don't overwrite cues from push if we already have them
+          const next = { ...message.state! };
+          if (!next.cues?.length && prev.cues?.length) {
+            next.cues = prev.cues;
+          }
+          return next;
+        });
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(onMessage);
+    return () => chrome.runtime.onMessage.removeListener(onMessage);
   }, []);
 
+  // ──────────────────────────────────────────────────────────────
+  // Auto-scroll to active cue
+  // ──────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (activeCueRef.current && state.activeCueIndex >= 0) {
+      activeCueRef.current.scrollIntoView({
+        behavior: hasInitialScrolled.current ? "smooth" : "auto",
+        block: "center"
+      });
+      hasInitialScrolled.current = true;
+    }
+  }, [state.activeCueIndex, mode]);
+
+  // ──────────────────────────────────────────────────────────────
+  // Keyboard shortcuts
+  // ──────────────────────────────────────────────────────────────
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Avoid triggering when user is typing in an input
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
         return;
       }
-      
       switch (e.key) {
         case " ":
           e.preventDefault();
@@ -58,8 +93,10 @@ export function PracticePanel({ onSwitchToStudio }: { onSwitchToStudio: () => vo
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [state.cues, state.activeCueIndex]);
 
+  // ──────────────────────────────────────────────────────────────
+  // Auto-pause & reveal mode sync
+  // ──────────────────────────────────────────────────────────────
   useEffect(() => {
-    // Notify content script about auto-pause and reveal mode whenever they change or cue changes
     if (state.status === "ready" && state.cues[state.activeCueIndex]) {
       void sendRuntimeMessage({
         type: "control-video-playback",
@@ -78,21 +115,14 @@ export function PracticePanel({ onSwitchToStudio }: { onSwitchToStudio: () => vo
     });
   }, [state.autoPause, state.revealMode, state.activeCueIndex, state.status]);
 
-  async function fetchState() {
-    const res = await sendRuntimeMessage<{ state: PracticeState }>({ type: "get-practice-state" });
-    if (res.ok && res.state) {
-      setState(res.state);
-    }
-  }
-
+  // ──────────────────────────────────────────────────────────────
+  // Actions
+  // ──────────────────────────────────────────────────────────────
   async function syncCues() {
     setState((s) => ({ ...s, status: "loading" }));
     const res = await sendRuntimeMessage<{ state: PracticeState }>({ type: "sync-practice-cues" });
     if (res.ok && res.state) {
       setState(res.state);
-      if (res.state.cues.length > 0 && res.state.activeCueIndex === -1) {
-         void updateState({ activeCueIndex: 0 });
-      }
     } else {
       setState((s) => ({ ...s, status: "error", error: res.error || "Failed to load subtitles." }));
     }
@@ -117,26 +147,39 @@ export function PracticePanel({ onSwitchToStudio }: { onSwitchToStudio: () => vo
   }
 
   async function togglePlayPause() {
-    await controlPlayback("play"); 
+    await controlPlayback("toggle-play-pause");
   }
 
   async function replayCurrentCue() {
-    if (state.activeCueIndex >= 0 && state.cues[state.activeCueIndex]) {
-      const cue = state.cues[state.activeCueIndex];
+    const { activeCueIndex, cues } = stateRef.current;
+    if (activeCueIndex >= 0 && cues[activeCueIndex]) {
+      const cue = cues[activeCueIndex];
       await controlPlayback("seek", { time: cue.start });
       await controlPlayback("play");
     }
   }
 
   async function navigateCue(direction: number) {
-    const nextIndex = state.activeCueIndex + direction;
-    if (nextIndex >= 0 && nextIndex < state.cues.length) {
+    const { activeCueIndex, cues } = stateRef.current;
+    const nextIndex = activeCueIndex + direction;
+    if (nextIndex >= 0 && nextIndex < cues.length) {
       await updateState({ activeCueIndex: nextIndex });
-      const cue = state.cues[nextIndex];
+      const cue = cues[nextIndex];
       await controlPlayback("seek", { time: cue.start });
       await controlPlayback("play");
     }
   }
+
+  async function playCueAt(index: number) {
+    const cue = state.cues[index];
+    if (!cue) return;
+    await updateState({ activeCueIndex: index });
+    await controlPlayback("seek", { time: cue.start });
+    await controlPlayback("play");
+  }
+
+  // ──────────────────────────────────────────────────────────────
+  // Derived
 
   return (
     <div className="practice-panel" ref={panelRef} tabIndex={-1}>
@@ -175,32 +218,35 @@ export function PracticePanel({ onSwitchToStudio }: { onSwitchToStudio: () => vo
 
           <div className="chat-container">
             {state.cues.map((cue, i) => {
-              // Show a limited window of cues to prevent massive DOM overhead for long scripts
-              if (i < state.activeCueIndex - 3 || i > state.activeCueIndex + 20) return null;
-              
+              if (i < state.activeCueIndex - 20 || i > state.activeCueIndex + 30) return null;
+
               const isActive = i === state.activeCueIndex;
               const isPast = i < state.activeCueIndex;
               const isFuture = i > state.activeCueIndex;
-              
+
               if (isFuture && mode === "blind") return null;
 
-              // Alternating roles for demo purposes (even vs odd)
               const isUserRole = i % 2 === 1;
-              const messageClass = `message ${isUserRole ? "user" : "actor"} ${isActive && mode === "output" && isUserRole ? "active-turn" : ""}`;
+              const messageClass = `message ${isUserRole ? "user" : "actor"} ${isActive ? "active-cue" : ""} ${isActive && mode === "output" ? "active-turn" : ""}`;
 
               return (
-                <div 
-                  key={cue.index} 
+                <div
+                  key={cue.index}
+                  ref={isActive ? activeCueRef : null}
                   className={messageClass}
                   onClick={() => {
                     void updateState({ activeCueIndex: i });
                     void controlPlayback("seek", { time: cue.start });
                   }}
-                  style={{ cursor: "pointer", opacity: isFuture ? 0.5 : 1 }}
+                  style={{ cursor: "pointer", opacity: isFuture ? 0.5 : 1, position: "relative" }}
                 >
-                  <div className="sender-name">{isUserRole ? "You" : "Actor"} <span style={{opacity: 0.5}}>{formatSrtTime(cue.start)}</span></div>
+                  <div className="sender-name">
+                    {isUserRole ? "You" : "Actor"}{" "}
+                    <span style={{ opacity: 0.5 }}>{formatSrtTime(cue.start)}</span>
+                  </div>
+
                   <div className="bubble">
-                    {isActive && mode === "output" && isUserRole ? (
+                    {isActive && mode === "output" ? (
                       <>
                         <div className="hint">Translate to target language:</div>
                         <div style={{ color: "var(--text)", fontSize: "1.1rem", margin: "0.5rem 0" }}>
@@ -209,19 +255,20 @@ export function PracticePanel({ onSwitchToStudio }: { onSwitchToStudio: () => vo
                       </>
                     ) : (
                       <>
-                        {mode === "blind" && isUserRole && !isPast ? "..." : cue.text}
-                        {isPast && isUserRole && mode === "output" && (
+                        {mode === "blind" && !isPast ? "..." : cue.text}
+                        {isPast && mode === "output" && (
                           <div className="feedback-pill">✓ Completed</div>
                         )}
                       </>
                     )}
                   </div>
+
                 </div>
               );
             })}
           </div>
 
-          {state.activeCueIndex >= 0 && state.activeCueIndex % 2 === 1 && mode === "output" ? (
+          {state.activeCueIndex >= 0 && mode === "output" ? (
             <div className="mic-container">
               <div className="status-text">Your turn to speak</div>
               <button className="mic-btn" onClick={() => void navigateCue(1)}>
@@ -247,10 +294,10 @@ export function PracticePanel({ onSwitchToStudio }: { onSwitchToStudio: () => vo
 
           <div className="practice-settings" style={{ borderTop: "1px solid var(--border)", paddingTop: "1rem", marginTop: "1rem" }}>
             <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem" }}>
-              <input 
-                type="checkbox" 
-                checked={state.autoPause} 
-                onChange={(e) => void updateState({ autoPause: e.target.checked })} 
+              <input
+                type="checkbox"
+                checked={state.autoPause}
+                onChange={(e) => void updateState({ autoPause: e.target.checked })}
               />
               Auto-pause after cue
             </label>

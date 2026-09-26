@@ -2595,6 +2595,14 @@ button.secondary {
   border: 1px solid rgba(178, 76, 45, 0.2);
   border-bottom-right-radius: 2px;
 }
+.message.active-cue .sender-name {
+  color: var(--accent);
+  font-weight: 600;
+}
+.message.active-cue .bubble {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(178, 76, 45, 0.25);
+}
 .message.active-turn.user .bubble {
   background: transparent;
   border: 2px dashed var(--accent);
@@ -2646,3 +2654,4 @@ button.secondary {
   font-weight: 600;
   margin-top: 4px;
 }
+
