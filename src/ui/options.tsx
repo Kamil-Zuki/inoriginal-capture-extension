@@ -41,6 +41,13 @@ const QUALITY_PRESETS: Array<{
   }
 ];
 
+type OpenRouterModelInfo = {
+  id: string;
+  name: string;
+  isFree?: boolean;
+  contextLength?: number;
+};
+
 const DEFAULT_SETTINGS: AnkiSettings = {
   settingsVersion: 2,
   captureMode: "dom-fallback",
@@ -58,6 +65,10 @@ const DEFAULT_SETTINGS: AnkiSettings = {
   translationMode: "after-capture",
   translationSourceLang: "en",
   translationTargetLang: "ru",
+  translationProvider: "mymemory",
+  dictionaryProvider: "free-dictionary",
+  openrouterApiKey: "",
+  openrouterModel: "openrouter/free",
   tags: "inoriginal",
   fieldMapping: {
     expression: "Expression",
@@ -83,16 +94,32 @@ function OptionsApp() {
   const [modelNames, setModelNames] = useState<string[]>([]);
   const [fieldNames, setFieldNames] = useState<string[]>([]);
   const [status, setStatus] = useState("Idle.");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [isTestingOpenRouter, setIsTestingOpenRouter] = useState(false);
+  const [openRouterStatus, setOpenRouterStatus] = useState<string | null>(null);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [availableModels, setAvailableModels] = useState<OpenRouterModelInfo[]>([]);
+  const [modelSearch, setModelSearch] = useState("");
+  const [isCustomModel, setIsCustomModel] = useState(false);
 
   useEffect(() => {
     void initialize();
   }, []);
 
   async function initialize() {
-    const { ankiSettings } = await chrome.storage.local.get("ankiSettings");
+    const { ankiSettings, openrouterModelsCache } = await chrome.storage.local.get([
+      "ankiSettings",
+      "openrouterModelsCache"
+    ]);
     const nextSettings = normalizeSettings(ankiSettings || {});
     setSettings(nextSettings);
+
+    if (Array.isArray(openrouterModelsCache) && openrouterModelsCache.length > 0) {
+      setAvailableModels(openrouterModelsCache);
+    }
+
     await refreshChoices(nextSettings);
+    void fetchModelsFromOpenRouter(nextSettings.openrouterApiKey);
   }
 
   async function testConnection() {
@@ -146,6 +173,55 @@ function OptionsApp() {
     }
   }
 
+  async function testOpenRouterConnection() {
+    if (!settings.openrouterApiKey?.trim()) {
+      setOpenRouterStatus("Please enter an OpenRouter API key first.");
+      return;
+    }
+
+    setIsTestingOpenRouter(true);
+    setOpenRouterStatus("Testing OpenRouter connection...");
+    try {
+      const response = await sendRuntimeMessage<{ model: string; reply: string }>({
+        type: "test-openrouter",
+        apiKey: settings.openrouterApiKey,
+        model: settings.openrouterModel || "openrouter/free"
+      });
+
+      if (response.ok) {
+        setOpenRouterStatus(`Success! Connected to OpenRouter using ${response.result?.model || settings.openrouterModel}. (AI reply: "${response.result?.reply || "OK"}")`);
+      } else {
+        setOpenRouterStatus(`Connection failed: ${response.error || "Unknown error"}`);
+      }
+    } catch (err) {
+      setOpenRouterStatus(`Connection error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsTestingOpenRouter(false);
+    }
+  }
+
+  async function fetchModelsFromOpenRouter(apiKey = settings.openrouterApiKey) {
+    setIsLoadingModels(true);
+    setOpenRouterStatus("Loading models from OpenRouter...");
+    try {
+      const response = await sendRuntimeMessage<OpenRouterModelInfo[]>({
+        type: "fetch-openrouter-models",
+        apiKey
+      });
+
+      if (response.ok && Array.isArray(response.result) && response.result.length > 0) {
+        setAvailableModels(response.result);
+        setOpenRouterStatus(`Loaded ${response.result.length} models directly from OpenRouter.`);
+      } else {
+        setOpenRouterStatus(`Failed to load models: ${response.error || "No models returned"}`);
+      }
+    } catch (err) {
+      setOpenRouterStatus(`Error fetching models: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsLoadingModels(false);
+    }
+  }
+
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
     try {
@@ -173,6 +249,13 @@ function OptionsApp() {
       qualityRules: rules
     });
   }
+
+  const searchLower = modelSearch.trim().toLowerCase();
+  const filteredModels = modelSearch.trim()
+    ? availableModels.filter((m) => m.name.toLowerCase().includes(searchLower) || m.id.toLowerCase().includes(searchLower))
+    : availableModels;
+  const filteredFreeModels = filteredModels.filter((m) => m.isFree || m.id === "openrouter/free");
+  const filteredPaidModels = filteredModels.filter((m) => !m.isFree && m.id !== "openrouter/free");
 
   return (
     <main className="panel panel--wide">
@@ -322,7 +405,30 @@ function OptionsApp() {
           </label>
         </div>
 
-        <h2>Translation</h2>
+        <h2>Translation & Word Definitions</h2>
+        <div className="split-grid">
+          <label>
+            <span>Translation provider</span>
+            <select
+              value={settings.translationProvider || "mymemory"}
+              onChange={(event) => setSettings({ ...settings, translationProvider: event.target.value as AnkiSettings["translationProvider"] })}
+            >
+              <option value="mymemory">MyMemory (Free web service)</option>
+              <option value="openrouter">OpenRouter AI</option>
+            </select>
+          </label>
+          <label>
+            <span>Word definition provider</span>
+            <select
+              value={settings.dictionaryProvider || "free-dictionary"}
+              onChange={(event) => setSettings({ ...settings, dictionaryProvider: event.target.value as AnkiSettings["dictionaryProvider"] })}
+            >
+              <option value="free-dictionary">Free Dictionary API (Free web dictionary)</option>
+              <option value="openrouter">OpenRouter AI (Contextual definition)</option>
+            </select>
+          </label>
+        </div>
+
         <label>
           <span>Translation mode</span>
           <select value={settings.translationMode} onChange={(event) => setSettings({ ...settings, translationMode: event.target.value as AnkiSettings["translationMode"] })}>
@@ -346,7 +452,145 @@ function OptionsApp() {
           </label>
         </div>
 
+        <h2>OpenRouter AI Configuration</h2>
+        <p className="muted">
+          Used when OpenRouter AI is selected as the translator or dictionary provider.
+          Default model is <code>openrouter/free</code>.
+        </p>
+
+        <label>
+          <span>OpenRouter API Key</span>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <input
+              type={showApiKey ? "text" : "password"}
+              placeholder="sk-or-v1-..."
+              value={settings.openrouterApiKey || ""}
+              onChange={(event) => setSettings({ ...settings, openrouterApiKey: event.target.value })}
+              style={{ flex: 1 }}
+            />
+            <button
+              type="button"
+              className="secondary"
+              style={{ width: "auto", whiteSpace: "nowrap", padding: "10px 16px" }}
+              onClick={() => setShowApiKey(!showApiKey)}
+            >
+              {showApiKey ? "Hide" : "Show"}
+            </button>
+          </div>
+          <small className="muted" style={{ display: "block", marginTop: "4px" }}>
+            Get your API key at <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" style={{ color: "var(--accent)", textDecoration: "underline" }}>openrouter.ai/keys</a>. Free models work with any valid key!
+          </small>
+        </label>
+
+        <label>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span>OpenRouter Model (Default: openrouter/free)</span>
+            <button
+              type="button"
+              className="ghost-button"
+              style={{ fontSize: "12px", padding: "4px 10px" }}
+              disabled={isLoadingModels}
+              onClick={() => void fetchModelsFromOpenRouter()}
+            >
+              {isLoadingModels ? "Refreshing..." : "↻ Refresh from OpenRouter"}
+            </button>
+          </div>
+
+          <input
+            type="search"
+            placeholder="Search / filter models (e.g. free, gemini, llama, deepseek)..."
+            value={modelSearch}
+            onChange={(event) => setModelSearch(event.target.value)}
+            style={{ marginBottom: "6px" }}
+          />
+
+          <select
+            value={isCustomModel ? "__custom__" : (settings.openrouterModel || "openrouter/free")}
+            onChange={(event) => {
+              const val = event.target.value;
+              if (val === "__custom__") {
+                setIsCustomModel(true);
+              } else {
+                setIsCustomModel(false);
+                setSettings({ ...settings, openrouterModel: val });
+              }
+            }}
+          >
+            {/* If currently selected model is not in available models list yet, preserve it */}
+            {!availableModels.some((m) => m.id === (settings.openrouterModel || "openrouter/free")) && !isCustomModel && (
+              <option value={settings.openrouterModel || "openrouter/free"}>
+                {settings.openrouterModel === "openrouter/free" || !settings.openrouterModel
+                  ? "★ openrouter/free (Default)"
+                  : settings.openrouterModel}
+              </option>
+            )}
+
+            {filteredFreeModels.length > 0 && (
+              <optgroup label={`Free Models (${filteredFreeModels.length})`}>
+                {filteredFreeModels.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.id === "openrouter/free" ? "★ openrouter/free (Default - Free Models Router)" : `${m.name} [Free] — ${m.id}`}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+
+            {filteredPaidModels.length > 0 && (
+              <optgroup label={`All Other Models (${filteredPaidModels.length})`}>
+                {filteredPaidModels.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name} — ${m.id}
+                  </option>
+                ))}
+              </optgroup>
+            )}
+
+            {filteredFreeModels.length === 0 && filteredPaidModels.length === 0 && (
+              <option disabled value="">
+                {isLoadingModels ? "Loading models from OpenRouter..." : "No models found matching filter"}
+              </option>
+            )}
+
+            <option value="__custom__">Custom model ID (enter manually)...</option>
+          </select>
+
+          <small className="muted" style={{ display: "block", marginTop: "4px" }}>
+            {availableModels.length > 0
+              ? `${availableModels.length} models fetched directly from OpenRouter (${availableModels.filter((m) => m.isFree || m.id === "openrouter/free").length} free)`
+              : isLoadingModels ? "Fetching live models from OpenRouter..." : "Click Refresh to load models from OpenRouter"}
+          </small>
+        </label>
+
+        {isCustomModel && (
+          <label>
+            <span>Custom Model ID</span>
+            <input
+              type="text"
+              placeholder="e.g. meta-llama/llama-3.3-70b-instruct:free or openrouter/free"
+              value={settings.openrouterModel || ""}
+              onChange={(event) => setSettings({ ...settings, openrouterModel: event.target.value })}
+            />
+          </label>
+        )}
+
         <div className="actions">
+          <button
+            type="button"
+            className="secondary"
+            disabled={isTestingOpenRouter || !settings.openrouterApiKey?.trim()}
+            onClick={testOpenRouterConnection}
+          >
+            {isTestingOpenRouter ? "Testing OpenRouter..." : "Test OpenRouter Key & Model"}
+          </button>
+        </div>
+
+        {openRouterStatus && (
+          <p className="status" style={{ background: "rgba(178, 76, 45, 0.08)", padding: "10px 14px", borderRadius: "10px", marginTop: "4px" }}>
+            {openRouterStatus}
+          </p>
+        )}
+
+        <div className="actions" style={{ marginTop: "1rem" }}>
           <button type="button" className="secondary" onClick={testConnection}>Test AnkiConnect</button>
           <button type="button" className="secondary" onClick={() => refreshChoices()}>Refresh decks and note types</button>
         </div>
@@ -455,6 +699,10 @@ function normalizeSettings(value: Partial<AnkiSettings>): AnkiSettings {
   return {
     ...DEFAULT_SETTINGS,
     ...value,
+    translationProvider: value.translationProvider || DEFAULT_SETTINGS.translationProvider,
+    dictionaryProvider: value.dictionaryProvider || DEFAULT_SETTINGS.dictionaryProvider,
+    openrouterApiKey: value.openrouterApiKey || "",
+    openrouterModel: value.openrouterModel || DEFAULT_SETTINGS.openrouterModel,
     qualityRules: {
       ...DEFAULT_SETTINGS.qualityRules,
       ...(value.qualityRules || {})

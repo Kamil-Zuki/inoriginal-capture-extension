@@ -33,6 +33,10 @@ const DEFAULT_ANKI_SETTINGS = {
   translationMode: "after-capture",
   translationSourceLang: "en",
   translationTargetLang: "ru",
+  translationProvider: "mymemory",
+  dictionaryProvider: "free-dictionary",
+  openrouterApiKey: "",
+  openrouterModel: "openrouter/free",
   tags: "inoriginal",
   fieldMapping: {
     expression: "Expression",
@@ -307,8 +311,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message?.type === "lookup-word") {
-    void lookupWord(message.word || "")
+    void lookupWord(message.word || "", message.options || { context: message.context })
       .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "test-openrouter") {
+    void testOpenRouter(message.apiKey, message.model)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
+  if (message?.type === "fetch-openrouter-models") {
+    void fetchOpenRouterModels(message.apiKey)
+      .then((models) => sendResponse({ ok: true, models, result: models }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
@@ -1295,6 +1313,12 @@ async function translateText(text, options = {}) {
   const settings = await getAnkiSettings();
   const sourceLang = options.sourceLang || settings.translationSourceLang || "en";
   const targetLang = options.targetLang || settings.translationTargetLang || "ru";
+  const provider = options.provider || settings.translationProvider || "mymemory";
+
+  if (provider === "openrouter") {
+    return translateTextWithOpenRouter(value, { sourceLang, targetLang }, settings);
+  }
+
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(value)}&langpair=${encodeURIComponent(`${sourceLang}|${targetLang}`)}`;
   const response = await fetch(url);
 
@@ -1316,10 +1340,120 @@ async function translateText(text, options = {}) {
   };
 }
 
-async function lookupWord(word) {
+function getLanguageName(code) {
+  const map = {
+    en: "English",
+    ru: "Russian",
+    es: "Spanish",
+    fr: "French",
+    de: "German",
+    it: "Italian",
+    ja: "Japanese",
+    ko: "Korean",
+    zh: "Chinese",
+    uk: "Ukrainian",
+    pl: "Polish",
+    pt: "Portuguese"
+  };
+  return map[code?.toLowerCase()] || code || "Russian";
+}
+
+function cleanTranslationText(rawContent) {
+  let text = (rawContent || "").trim();
+
+  // 1. Remove reasoning / thought blocks (<think>...</think>)
+  text = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
+  // 2. Remove common moderation / safety classification lines
+  // (Some free models or safety evaluators output "User Safety: safe")
+  const lines = text.split("\n");
+  const filtered = lines.filter((line) => {
+    const trimmed = line.trim();
+    if (/^(?:user\s+)?safety:\s*safe/i.test(trimmed)) return false;
+    if (/^(?:input\s+)?safety:\s*safe/i.test(trimmed)) return false;
+    if (/^safety\s+assessment:/i.test(trimmed)) return false;
+    if (/^moderation:\s*safe/i.test(trimmed)) return false;
+    return true;
+  });
+  text = filtered.join("\n").trim();
+
+  // 3. Remove outer quotes
+  if ((text.startsWith('"') && text.endsWith('"')) ||
+      (text.startsWith('«') && text.endsWith('»')) ||
+      (text.startsWith("'") && text.endsWith("'"))) {
+    text = text.slice(1, -1).trim();
+  }
+
+  // 4. Strip prefix like "Translation: ..." or "Перевод: ..."
+  text = text.replace(/^(?:translation|перевод):\s*/i, "").trim();
+
+  return text;
+}
+
+async function translateTextWithOpenRouter(text, { sourceLang, targetLang }, settings) {
+  const apiKey = (settings.openrouterApiKey || "").trim();
+  if (!apiKey) {
+    throw new Error("OpenRouter API key is missing. Please configure it in extension options.");
+  }
+
+  const model = (settings.openrouterModel || "").trim() || "openrouter/free";
+  const sourceLangName = getLanguageName(sourceLang);
+  const targetLangName = getLanguageName(targetLang);
+
+  const systemPrompt = `You are a professional language translator. Translate the text accurately from ${sourceLangName} to ${targetLangName}. Preserve natural tone, slang, and context. Output ONLY the translation without quotes, safety labels, or explanations.`;
+  const userContent = `Translate the following text from ${sourceLangName} to ${targetLangName}. Output the translation only:\n\n${text}`;
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://github.com/Kamil-Zuki/inoriginal-capture-extension",
+      "X-Title": "InOriginal Capture Extension",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent }
+      ],
+      temperature: 0.2
+    })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => null);
+    const detail = errorBody?.error?.message || response.statusText;
+    throw new Error(`OpenRouter translation failed (${response.status}): ${detail}`);
+  }
+
+  const data = await response.json();
+  const rawContent = data?.choices?.[0]?.message?.content || "";
+  const translatedText = cleanTranslationText(rawContent);
+
+  if (!translatedText) {
+    throw new Error(`The model (${model}) returned an empty translation or a safety check ("${rawContent.trim()}"). Try selecting a specific model in Settings (e.g. meta-llama/llama-3.3-70b-instruct:free or google/gemini-2.0-flash-exp:free).`);
+  }
+
+  return {
+    provider: `OpenRouter (${model})`,
+    sourceLang,
+    targetLang,
+    translatedText
+  };
+}
+
+async function lookupWord(word, options = {}) {
   const value = word.trim();
   if (!value) {
     throw new Error("No word selected.");
+  }
+
+  const settings = await getAnkiSettings();
+  const provider = options.provider || settings.dictionaryProvider || "free-dictionary";
+
+  if (provider === "openrouter") {
+    return lookupWordWithOpenRouter(value, options, settings);
   }
 
   const candidates = buildDictionaryCandidates(value);
@@ -1369,6 +1503,190 @@ async function lookupWord(word) {
     wordTypes: wordTypes.join(", "),
     word: resolvedWord
   };
+}
+
+async function lookupWordWithOpenRouter(word, options, settings) {
+  const apiKey = (settings.openrouterApiKey || "").trim();
+  if (!apiKey) {
+    throw new Error("OpenRouter API key is missing. Please configure it in extension options.");
+  }
+
+  const model = (settings.openrouterModel || "").trim() || "openrouter/free";
+  const contextSentence = (options?.context || "").trim();
+
+  const systemPrompt = `You are an expert language teacher and lexicographer. Analyze the given word${contextSentence ? " within the context sentence" : ""} and return a single valid JSON object containing lexical details.
+Output ONLY raw JSON with no markdown formatting, no backticks, and no extra text.
+JSON structure:
+{
+  "word": "canonical/base form or target word",
+  "phonetic": "IPA transcription, e.g. /ˈkæptʃər/",
+  "partOfSpeech": "primary part of speech in context, e.g. verb, noun, adjective",
+  "wordTypes": "comma-separated parts of speech, e.g. verb, noun",
+  "definition": "concise, learner-friendly English definition (matching the context if provided)",
+  "example": "a natural example sentence showing correct usage",
+  "synonyms": "comma-separated synonyms",
+  "antonyms": "comma-separated antonyms"
+}`;
+
+  const userContent = contextSentence
+    ? `Word: "${word}"\nContext sentence: "${contextSentence}"`
+    : `Word: "${word}"`;
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://github.com/Kamil-Zuki/inoriginal-capture-extension",
+      "X-Title": "InOriginal Capture Extension",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent }
+      ],
+      temperature: 0.2
+    })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => null);
+    const detail = errorBody?.error?.message || response.statusText;
+    throw new Error(`OpenRouter dictionary lookup failed (${response.status}): ${detail}`);
+  }
+
+  const data = await response.json();
+  const rawContent = data?.choices?.[0]?.message?.content || "";
+  let parsed = null;
+
+  try {
+    let clean = rawContent.trim();
+    clean = clean.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+    if (clean.startsWith("```")) {
+      clean = clean.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+    }
+    parsed = JSON.parse(clean);
+  } catch {
+    const jsonMatch = rawContent.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        parsed = JSON.parse(jsonMatch[0]);
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  if (!parsed || !parsed.definition) {
+    if (rawContent.trim()) {
+      return {
+        word,
+        phonetic: "",
+        partOfSpeech: "",
+        wordTypes: "",
+        definition: rawContent.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim(),
+        example: "",
+        synonyms: "",
+        antonyms: "",
+        provider: `OpenRouter (${model})`
+      };
+    }
+    throw new Error(`Could not parse dictionary entry from OpenRouter for "${word}".`);
+  }
+
+  return {
+    word: parsed.word || word,
+    phonetic: parsed.phonetic || "",
+    partOfSpeech: parsed.partOfSpeech || "",
+    wordTypes: parsed.wordTypes || parsed.partOfSpeech || "",
+    definition: parsed.definition || "",
+    example: parsed.example || "",
+    synonyms: parsed.synonyms || "",
+    antonyms: parsed.antonyms || "",
+    provider: `OpenRouter (${model})`
+  };
+}
+
+async function testOpenRouter(apiKey, model) {
+  const key = (apiKey || "").trim();
+  if (!key) {
+    throw new Error("Please enter an OpenRouter API key to test.");
+  }
+  const selectedModel = (model || "").trim() || "openrouter/free";
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${key}`,
+      "HTTP-Referer": "https://github.com/Kamil-Zuki/inoriginal-capture-extension",
+      "X-Title": "InOriginal Capture Extension",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: selectedModel,
+      messages: [{ role: "user", content: "Reply with 'OK'." }],
+      max_tokens: 10
+    })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => null);
+    const detail = errorBody?.error?.message || response.statusText;
+    throw new Error(`OpenRouter test failed (${response.status}): ${detail}`);
+  }
+
+  const data = await response.json();
+  const reply = data?.choices?.[0]?.message?.content?.trim() || "";
+  return {
+    model: selectedModel,
+    reply: reply || "OK"
+  };
+}
+
+async function fetchOpenRouterModels(apiKey) {
+  const headers = {
+    "HTTP-Referer": "https://github.com/Kamil-Zuki/inoriginal-capture-extension",
+    "X-Title": "InOriginal Capture Extension"
+  };
+  if (apiKey && apiKey.trim()) {
+    headers["Authorization"] = `Bearer ${apiKey.trim()}`;
+  }
+
+  const response = await fetch("https://openrouter.ai/api/v1/models", {
+    method: "GET",
+    headers
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch models from OpenRouter (${response.status}).`);
+  }
+
+  const json = await response.json();
+  const rawList = Array.isArray(json?.data) ? json.data : [];
+
+  const models = rawList.map((m) => {
+    const isFree = m.id === "openrouter/free" ||
+      m.id.endsWith(":free") ||
+      (m.pricing?.prompt === "0" && m.pricing?.completion === "0");
+    return {
+      id: m.id,
+      name: m.name || m.id,
+      isFree
+    };
+  });
+
+  models.sort((a, b) => {
+    if (a.id === "openrouter/free") return -1;
+    if (b.id === "openrouter/free") return 1;
+    if (a.isFree && !b.isFree) return -1;
+    if (!a.isFree && b.isFree) return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  await chrome.storage.local.set({ openrouterModelsCache: models });
+
+  return models;
 }
 
 function buildDictionaryCandidates(value) {
@@ -1770,6 +2088,10 @@ function normalizeAnkiSettings(value) {
     ...value,
     settingsVersion: DEFAULT_ANKI_SETTINGS.settingsVersion,
     captureMode,
+    translationProvider: value?.translationProvider === "openrouter" ? "openrouter" : "mymemory",
+    dictionaryProvider: value?.dictionaryProvider === "openrouter" ? "openrouter" : "free-dictionary",
+    openrouterApiKey: typeof value?.openrouterApiKey === "string" ? value.openrouterApiKey.trim() : "",
+    openrouterModel: typeof value?.openrouterModel === "string" && value.openrouterModel.trim() ? value.openrouterModel.trim() : DEFAULT_ANKI_SETTINGS.openrouterModel,
     qualityRules: {
       ...DEFAULT_ANKI_SETTINGS.qualityRules,
       ...(value.qualityRules || {})

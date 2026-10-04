@@ -22,6 +22,9 @@ export type QualityRules = {
   maxRecommendedAudioMs: number;
 };
 
+export type TranslationProvider = "mymemory" | "openrouter";
+export type DictionaryProvider = "free-dictionary" | "openrouter";
+
 export type AnkiSettings = {
   settingsVersion?: number;
   captureMode: "auto-vtt" | "manual-range" | "dom-fallback";
@@ -34,6 +37,10 @@ export type AnkiSettings = {
   translationMode: "manual" | "after-capture" | "before-send";
   translationSourceLang: string;
   translationTargetLang: string;
+  translationProvider?: TranslationProvider;
+  dictionaryProvider?: DictionaryProvider;
+  openrouterApiKey?: string;
+  openrouterModel?: string;
   tags: string;
   fieldMapping: FieldMapping;
   appMode?: AppMode;

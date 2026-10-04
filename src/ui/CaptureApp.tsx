@@ -501,7 +501,8 @@ export function CaptureApp({ mode }: CaptureAppProps) {
       text,
       options: {
         sourceLang: context?.settings.translationSourceLang,
-        targetLang: context?.settings.translationTargetLang
+        targetLang: context?.settings.translationTargetLang,
+        provider: context?.settings.translationProvider
       }
     });
     setIsTranslating(false);
@@ -555,7 +556,12 @@ export function CaptureApp({ mode }: CaptureAppProps) {
       wordTypes?: string;
     }>({
       type: "lookup-word",
-      word: targetWord
+      word: targetWord,
+      context: expression,
+      options: {
+        context: expression,
+        provider: context?.settings.dictionaryProvider
+      }
     });
     setIsLookingUpWord(false);
 
@@ -597,7 +603,12 @@ export function CaptureApp({ mode }: CaptureAppProps) {
       wordTypes?: string;
     }>({
       type: "lookup-word",
-      word: normalized
+      word: normalized,
+      context: expression,
+      options: {
+        context: expression,
+        provider: context?.settings.dictionaryProvider
+      }
     });
     setIsLookingUpWord(false);
 
@@ -1140,7 +1151,7 @@ export function CaptureApp({ mode }: CaptureAppProps) {
 
         {showCardPreview && activeStep === "edit" && (
           <div ref={cardPreviewRef} className="studio-card-preview-anchor">
-            <StudioCardPreview context={context} draft={draft} />
+            <StudioCardPreview context={context} draft={draft} isTranslating={isTranslating} />
           </div>
         )}
 
@@ -1170,8 +1181,8 @@ export function CaptureApp({ mode }: CaptureAppProps) {
                 </div>
               </label>
               <label className="editor-card">
-                <span>Translation</span>
-                <textarea rows={3} value={translation} onChange={(event) => setTranslation(event.target.value)} />
+                <span>Translation {isTranslating && <span className="spinner"></span>}</span>
+                <textarea rows={3} value={translation} disabled={isTranslating} placeholder={isTranslating ? "Translating..." : ""} onChange={(event) => setTranslation(event.target.value)} />
               </label>
               <label className="editor-card">
                 <span>Definition</span>
@@ -1216,17 +1227,20 @@ export function CaptureApp({ mode }: CaptureAppProps) {
                 <h3>Translator</h3>
                 <p className="muted">
                   {formatTranslationMode(context?.settings.translationMode)} | {context?.settings.translationSourceLang || "en"} to {context?.settings.translationTargetLang || "ru"}
+                  {context?.settings.translationProvider === "openrouter"
+                    ? ` | AI: ${context.settings.openrouterModel || "openrouter/free"}`
+                    : " | MyMemory"}
                 </p>
               </div>
               <button className="secondary inline-action" disabled={isTranslating || !expression.trim()} onClick={() => translateSubtitle()} type="button">
-                {isTranslating ? "Translating..." : "Translate subtitle"}
+                {isTranslating ? <><span className="spinner" style={{ marginLeft: 0, marginRight: 6 }}></span> Translating...</> : "Translate subtitle"}
               </button>
             </section>
           </section>
         )}
 
         {showCardPreview && activeStep === "send" && (
-          <StudioCardPreview context={context} draft={draft} />
+          <StudioCardPreview context={context} draft={draft} isTranslating={isTranslating} />
         )}
 
         {activeStep === "send" && (
@@ -1649,17 +1663,19 @@ function CardQualityPanel({ onAction, quality }: { onAction: (action: SmartActio
 function StudioCardPreview({
   context,
   draft,
+  isTranslating,
   collapsible = false,
   defaultOpen = true
 }: {
   context: PopupContext | null;
   draft: SentenceDraft;
+  isTranslating?: boolean;
   collapsible?: boolean;
   defaultOpen?: boolean;
 }) {
   const preview = (
     <>
-      <CardPreview context={context} draft={draft} />
+      <CardPreview context={context} draft={draft} isTranslating={isTranslating} />
       <AnkiFieldPreview context={context} draft={draft} />
     </>
   );
@@ -1676,7 +1692,7 @@ function StudioCardPreview({
   return <div className="studio-card-preview">{preview}</div>;
 }
 
-function CardPreview({ context, draft }: { context: PopupContext | null; draft: SentenceDraft }) {
+function CardPreview({ context, draft, isTranslating }: { context: PopupContext | null; draft: SentenceDraft; isTranslating?: boolean }) {
   const capture = context?.capture;
   const mapping = context?.settings.fieldMapping;
   const warnings = [
@@ -1687,11 +1703,11 @@ function CardPreview({ context, draft }: { context: PopupContext | null; draft: 
     draft.translation && !mapping?.translation ? "Translation is filled, but Translation field is not mapped." : ""
   ].filter(Boolean);
 
-  const backRows = [
+  const backRows: [string, React.ReactNode][] = [
     ["Word", draft.word],
     ["Transcription", draft.transcription],
     ["Word Types", draft.wordTypes],
-    ["Translation", draft.translation],
+    ["Translation", isTranslating ? <><span className="spinner" style={{ marginLeft: 0, marginRight: 6 }}></span>Translating...</> : draft.translation],
     ["Definition", draft.definition],
     ["Example", draft.example],
     ["Synonyms", draft.synonyms],
