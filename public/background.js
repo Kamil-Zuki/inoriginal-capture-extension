@@ -1316,7 +1316,12 @@ async function translateText(text, options = {}) {
   const provider = options.provider || settings.translationProvider || "mymemory";
 
   if (provider === "openrouter") {
-    return translateTextWithOpenRouter(value, { sourceLang, targetLang }, settings);
+    return translateTextWithOpenRouter(value, {
+      sourceLang,
+      targetLang,
+      contextText: options.contextText,
+      sourceTitle: options.sourceTitle
+    }, settings);
   }
 
   const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(value)}&langpair=${encodeURIComponent(`${sourceLang}|${targetLang}`)}`;
@@ -1390,7 +1395,7 @@ function cleanTranslationText(rawContent) {
   return text;
 }
 
-async function translateTextWithOpenRouter(text, { sourceLang, targetLang }, settings) {
+async function translateTextWithOpenRouter(text, { sourceLang, targetLang, contextText, sourceTitle }, settings) {
   const apiKey = (settings.openrouterApiKey || "").trim();
   if (!apiKey) {
     throw new Error("OpenRouter API key is missing. Please configure it in extension options.");
@@ -1401,7 +1406,16 @@ async function translateTextWithOpenRouter(text, { sourceLang, targetLang }, set
   const targetLangName = getLanguageName(targetLang);
 
   const systemPrompt = `You are a professional language translator. Translate the text accurately from ${sourceLangName} to ${targetLangName}. Preserve natural tone, slang, and context. Output ONLY the translation without quotes, safety labels, or explanations.`;
-  const userContent = `Translate the following text from ${sourceLangName} to ${targetLangName}. Output the translation only:\n\n${text}`;
+  
+  let contextPrompt = "";
+  if (sourceTitle) {
+    contextPrompt += `\nMedia source/title: ${sourceTitle}`;
+  }
+  if (contextText) {
+    contextPrompt += `\nContext (previous/next subtitles):\n${contextText}`;
+  }
+
+  const userContent = `Translate the following text from ${sourceLangName} to ${targetLangName}. Output the translation only:${contextPrompt ? "\n" + contextPrompt : ""}\n\nText to translate:\n${text}`;
 
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",

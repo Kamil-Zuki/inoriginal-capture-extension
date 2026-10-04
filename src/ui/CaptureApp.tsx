@@ -502,7 +502,9 @@ export function CaptureApp({ mode }: CaptureAppProps) {
       options: {
         sourceLang: context?.settings.translationSourceLang,
         targetLang: context?.settings.translationTargetLang,
-        provider: context?.settings.translationProvider
+        provider: context?.settings.translationProvider,
+        contextText: example,
+        sourceTitle: source || context?.capture?.pageTitle
       }
     });
     setIsTranslating(false);
