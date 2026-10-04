@@ -1369,8 +1369,27 @@ function cleanTranslationText(rawContent) {
   // 1. Remove reasoning / thought blocks (<think>...</think>)
   text = text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
 
-  // 2. Remove common moderation / safety classification lines
-  // (Some free models or safety evaluators output "User Safety: safe")
+  // 2. Strip prompt echo — if model returned our prompt markers back, take only what's after
+  // e.g. "Text to translate:\nX" or "Текст для перевода:\nX"
+  const echoMarkers = [
+    /текст для перевода:\s*/i,
+    /text to translate:\s*/i,
+    /контекст \(предыдущ[^)]*\)[^\n]*\n[\s\S]*?\n\n/i,
+    /context \(previous[^)]*\)[^\n]*\n[\s\S]*?\n\n/i,
+    /источник\/название медиа:[^\n]*\n/i,
+    /media source\/title:[^\n]*\n/i
+  ];
+  for (const marker of echoMarkers) {
+    const match = text.match(marker);
+    if (match) {
+      const afterMarker = text.slice(text.lastIndexOf(match[0]) + match[0].length).trim();
+      if (afterMarker.length > 0) {
+        text = afterMarker;
+      }
+    }
+  }
+
+  // 3. Remove common moderation / safety classification lines
   const lines = text.split("\n");
   const filtered = lines.filter((line) => {
     const trimmed = line.trim();
@@ -1378,18 +1397,20 @@ function cleanTranslationText(rawContent) {
     if (/^(?:input\s+)?safety:\s*safe/i.test(trimmed)) return false;
     if (/^safety\s+assessment:/i.test(trimmed)) return false;
     if (/^moderation:\s*safe/i.test(trimmed)) return false;
+    if (/^(?:предыдущий|текущий|следующий):/i.test(trimmed)) return false;
+    if (/^(?:previous|current|next):/i.test(trimmed)) return false;
     return true;
   });
   text = filtered.join("\n").trim();
 
-  // 3. Remove outer quotes
+  // 4. Remove outer quotes
   if ((text.startsWith('"') && text.endsWith('"')) ||
       (text.startsWith('«') && text.endsWith('»')) ||
       (text.startsWith("'") && text.endsWith("'"))) {
     text = text.slice(1, -1).trim();
   }
 
-  // 4. Strip prefix like "Translation: ..." or "Перевод: ..."
+  // 5. Strip prefix like "Translation: ..." or "Перевод: ..."
   text = text.replace(/^(?:translation|перевод):\s*/i, "").trim();
 
   return text;
@@ -1405,17 +1426,21 @@ async function translateTextWithOpenRouter(text, { sourceLang, targetLang, conte
   const sourceLangName = getLanguageName(sourceLang);
   const targetLangName = getLanguageName(targetLang);
 
-  const systemPrompt = `You are a professional language translator. Translate the text accurately from ${sourceLangName} to ${targetLangName}. Preserve natural tone, slang, and context. Output ONLY the translation without quotes, safety labels, or explanations.`;
-  
-  let contextPrompt = "";
+  // Build context additions for system prompt (not user prompt, to avoid echo)
+  let systemContext = "";
   if (sourceTitle) {
-    contextPrompt += `\nMedia source/title: ${sourceTitle}`;
+    // Extract a clean show/movie name from a long page title like "Watch True Detective..."
+    const titleMatch = sourceTitle.match(/\(([^)]+,\s*\d{4}[^)]*)\)/) || [];
+    const cleanTitle = titleMatch[1] || sourceTitle.slice(0, 80);
+    systemContext += `\nMedia context: ${cleanTitle}.`;
   }
   if (contextText) {
-    contextPrompt += `\nContext (previous/next subtitles):\n${contextText}`;
+    systemContext += `\nSurrounding subtitle lines for context (DO NOT translate these, only use for context):\n${contextText}`;
   }
 
-  const userContent = `Translate the following text from ${sourceLangName} to ${targetLangName}. Output the translation only:${contextPrompt ? "\n" + contextPrompt : ""}\n\nText to translate:\n${text}`;
+  const systemPrompt = `You are a professional ${sourceLangName}-to-${targetLangName} subtitle translator.${systemContext}\nRules: output ONLY the translated sentence — no labels, no explanations, no quotes, no safety notes.`;
+
+  const userContent = `${text}`;
 
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
