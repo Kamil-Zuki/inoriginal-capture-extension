@@ -1438,9 +1438,36 @@ async function translateTextWithOpenRouter(text, { sourceLang, targetLang, conte
     systemContext += `\nSurrounding subtitle lines for context (DO NOT translate these, only use for context):\n${contextText}`;
   }
 
-  const systemPrompt = `You are a professional ${sourceLangName}-to-${targetLangName} subtitle translator.${systemContext}\nRules: output ONLY the translated sentence — no labels, no explanations, no quotes, no safety notes.`;
+  const systemPrompt = `You are a professional ${sourceLangName}-to-${targetLangName} subtitle translator.${systemContext}\nRules: translate accurately, preserve tone and slang. Respond with valid JSON only.`;
 
   const userContent = `${text}`;
+
+  const requestBody = {
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userContent }
+    ],
+    temperature: 0.2,
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "translation",
+        strict: true,
+        schema: {
+          type: "object",
+          properties: {
+            translation: {
+              type: "string",
+              description: `The translated text in ${targetLangName}`
+            }
+          },
+          required: ["translation"],
+          additionalProperties: false
+        }
+      }
+    }
+  };
 
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -1450,14 +1477,7 @@ async function translateTextWithOpenRouter(text, { sourceLang, targetLang, conte
       "X-Title": "InOriginal Capture Extension",
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({
-      model,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userContent }
-      ],
-      temperature: 0.2
-    })
+    body: JSON.stringify(requestBody)
   });
 
   if (!response.ok) {
@@ -1468,10 +1488,19 @@ async function translateTextWithOpenRouter(text, { sourceLang, targetLang, conte
 
   const data = await response.json();
   const rawContent = data?.choices?.[0]?.message?.content || "";
-  const translatedText = cleanTranslationText(rawContent);
+
+  // Try to parse structured JSON response first
+  let translatedText = "";
+  try {
+    const parsed = JSON.parse(rawContent);
+    translatedText = (parsed?.translation || "").trim();
+  } catch {
+    // Fallback: model doesn't support json_schema, clean the raw text
+    translatedText = cleanTranslationText(rawContent);
+  }
 
   if (!translatedText) {
-    throw new Error(`The model (${model}) returned an empty translation or a safety check ("${rawContent.trim()}"). Try selecting a specific model in Settings (e.g. meta-llama/llama-3.3-70b-instruct:free or google/gemini-2.0-flash-exp:free).`);
+    throw new Error(`The model (${model}) returned an empty translation. Raw: "${rawContent.trim().slice(0, 100)}". Try a different model in Settings.`);
   }
 
   return {
