@@ -693,10 +693,20 @@ function observeSubtitle() {
       const resolved = idx >= 0 ? idx : practiceCueTracker.lastCueIndex;
       if (resolved !== practiceCueTracker.lastCueIndex && resolved >= 0) {
         practiceCueTracker.lastCueIndex = resolved;
-        void chrome.runtime.sendMessage({
-          type: "practice-cue-changed",
-          activeCueIndex: resolved
-        }).catch(() => null);
+        if (!chrome?.runtime?.id) {
+          stopPracticeCueTracking();
+          return;
+        }
+        try {
+          chrome.runtime.sendMessage({
+            type: "practice-cue-changed",
+            activeCueIndex: resolved
+          }, () => {
+            const _ = chrome.runtime.lastError; // Clear lastError just in case
+          });
+        } catch (err) {
+          stopPracticeCueTracking();
+        }
       }
     };
 

@@ -142,7 +142,7 @@ export type RuntimeResponse<T> = {
 };
 
 /** Top-level app mode: Anki capture studio or Shadow speaking practice. */
-export type AppMode = "studio" | "practice";
+export type AppMode = "studio" | "practice" | "analyzer";
 
 export type PracticeStatus =
   | "idle"

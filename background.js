@@ -338,6 +338,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "analyze-phrases") {
+    void analyzePhrasesWithOpenRouter(message.text || "")
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   return false;
 });
 
@@ -1755,6 +1762,80 @@ async function fetchOpenRouterModels(apiKey) {
   await chrome.storage.local.set({ openrouterModelsCache: models });
 
   return models;
+}
+
+async function analyzePhrasesWithOpenRouter(text) {
+  const settings = await getAnkiSettings();
+  const apiKey = (settings.openrouterApiKey || "").trim();
+  if (!apiKey) {
+    throw new Error("OpenRouter API key is missing. Please configure it in extension options.");
+  }
+  const model = (settings.openrouterModel || "").trim() || "openrouter/free";
+
+  const systemPrompt = `You are a linguist and language teacher. Given a text (subtitles from a movie/series), extract up to 50 of the most useful conversational phrases, idioms, phrasal verbs, or collocations that language learners should know. 
+Rank them from most used in real life to least used.`;
+
+  const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${apiKey}`,
+      "HTTP-Referer": "https://github.com/Kamil-Zuki/inoriginal-capture-extension",
+      "X-Title": "InOriginal Capture Extension",
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: text.substring(0, 40000) } // limit to 40k chars just in case
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "phrases_extraction",
+          strict: true,
+          schema: {
+            type: "object",
+            properties: {
+              phrases: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    phrase: { type: "string", description: "The extracted phrase or idiom" },
+                    rank: { type: "integer", description: "Rank from 1 to 50 based on real-life usefulness" }
+                  },
+                  required: ["phrase", "rank"],
+                  additionalProperties: false
+                }
+              }
+            },
+            required: ["phrases"],
+            additionalProperties: false
+          }
+        }
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.json().catch(() => null);
+    const detail = errorBody?.error?.message || response.statusText;
+    throw new Error(`OpenRouter phrase analysis failed (${response.status}): ${detail}`);
+  }
+
+  const data = await response.json();
+  let reply = data?.choices?.[0]?.message?.content?.trim() || "{}";
+  
+  // Clean markdown JSON wrapping if present
+  reply = reply.replace(/^```json\s*/i, "").replace(/```\s*$/i, "").trim();
+  
+  try {
+    const parsed = JSON.parse(reply);
+    return parsed.phrases || [];
+  } catch (e) {
+    throw new Error("Could not parse JSON from OpenRouter response. Response was: " + reply.substring(0, 100));
+  }
 }
 
 function buildDictionaryCandidates(value) {

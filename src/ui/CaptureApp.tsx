@@ -4,6 +4,7 @@ import type { AnkiSettings, CaptureData, PopupContext, SentenceDraft } from "../
 import { PopupLauncher } from "./studio/PopupLauncher";
 import type { StudioStep } from "./studio/types";
 import { PracticePanel } from "./practice/PracticePanel";
+import { AnalyzerPanel } from "./analyzer/AnalyzerPanel";
 import "./styles.css";
 
 const STUDIO_STEP_KEY = "inoriginal-capture-active-step";
@@ -87,8 +88,8 @@ export function CaptureApp({ mode }: CaptureAppProps) {
   const [overflowOpen, setOverflowOpen] = useState(false);
 
   const APP_MODE_KEY = "inoriginal-capture-app-mode";
-  const [appMode, setAppMode] = useState<"studio" | "practice">(() => {
-    return (localStorage.getItem(APP_MODE_KEY) as "studio" | "practice") || "studio";
+  const [appMode, setAppMode] = useState<AppMode>(() => {
+    return (localStorage.getItem(APP_MODE_KEY) as AppMode) || "studio";
   });
 
   useEffect(() => {
@@ -949,6 +950,10 @@ export function CaptureApp({ mode }: CaptureAppProps) {
     return <PracticePanel onSwitchToStudio={() => setAppMode("studio")} />;
   }
 
+  if (appMode === "analyzer") {
+    return <AnalyzerPanel onSwitchToStudio={() => setAppMode("studio")} />;
+  }
+
   if (mode === "popup") {
     return (
       <PopupLauncher
@@ -990,6 +995,15 @@ export function CaptureApp({ mode }: CaptureAppProps) {
             </button>
             {overflowOpen && (
               <div className="overflow-menu__panel">
+                <button
+                  onClick={() => {
+                    setAppMode("analyzer");
+                    setOverflowOpen(false);
+                  }}
+                  type="button"
+                >
+                  Subtitle Analyzer
+                </button>
                 <button
                   onClick={() => {
                     setOverflowOpen(false);
